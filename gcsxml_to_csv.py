@@ -97,10 +97,10 @@ def add_spell_to_all_spells(name, new_spell, spells, caster_type):
 		new_spell["caster_type"] = caster_type
 		if name in spells:
 			if "caster_type" in spells[name]:
-				old_one_rename = name + "--" + spells[name]["caster_type"]
+				old_one_rename = name + " [" + spells[name]["caster_type"] + "]"
 				spells[old_one_rename] = spells[name].copy()
 				spells[name] = {}
-			new_name = name + "--" + caster_type
+			new_name = name + " [" + caster_type + "]"
 			spells[new_name] = new_spell
 		else:
 			spells[name] = new_spell
