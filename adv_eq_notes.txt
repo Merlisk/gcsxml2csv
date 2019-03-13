@@ -1,0 +1,57 @@
+	# EQUIPment
+	# Likely division: weapons (sub-tags), armor (equipment_containers) and other.
+	## Basic 6 fields
+	#    description: 327 -> name
+	#    value: 327
+	#    reference: 327
+	#    weight: 322
+	#    notes: 147
+	#    categories: 327;      category: 394 # Multiples ';' separated?
+	## Ignore:      legality_class: 115;      quantity: 115
+	#
+	#    dr_bonus: 7;      amount: 7;      location: 7 # mixed items, probably not worth it
+	#    attribute_bonus: 28;      attribute: 28;      amount: 28 # shields mostly
+	#
+	#    melee_weapon: 217 # same item can have multiples -> separate csv
+	#      damage: 217 -> separate "value type", value -> [sw|thr](bonus)
+	#      reach: 217
+	#      block: 217 # either block/parry, No -> ""
+	#      parry: 217
+	#      strength: 212
+	#      usage: 201
+	#      default: 1204 # If
+	#        type: 1204 # is Skill
+	#        modifier: 1204 # is 0
+	#        name: 989 # then save
+	#        specialization: 21 # add if above?
+	#    ranged_weapon: 57
+	#      damage: 57
+	#      accuracy: 57
+	#      range: 57
+	#      bulk: 56
+	#      strength: 43
+	#      rate_of_fire: 43
+	#      shots: 44
+	#      usage: 49
+	#      default: 140 # Same as melee weapon
+	#
+	#  equipment_container: 46; Armor & Containers
+	## Same basic 6 fields as normal equipment
+	#    prereq_list: 27;	contained_weight_prereq: 27 # Max weight carried
+	#    equipment: 115
+	## For armor:
+	## Check reference is always same, create sum for value and weight.split[0]
+	### Check amount is same, create list of locations
+	#      dr_bonus: 160;        amount: 160;        location: 160
+	#
+	# ADVantages
+	# Can probably ignore advantage_containers
+	#    name: 322
+	#    reference: 322
+	#    base_points: 210
+	#    levels: 97
+	#    points_per_level: 95
+	#    skill_bonus: 165
+	#      amount: 165
+	#      name: 165
+	#    notes: 34
