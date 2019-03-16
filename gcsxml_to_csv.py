@@ -2,6 +2,7 @@
 
 import sys
 import csv
+import uuid
 import argparse
 import xml.etree.ElementTree as ET
 import collections
@@ -15,7 +16,7 @@ def find_all_elements(elem, tags_dict, unused_tag_name):
 			if child.tag in tags_dict:
 				sub_dict = tags_dict[child.tag]
 				sub_dict[unused_tag_name] += 1
-			else: 
+			else:
 				sub_dict = { unused_tag_name: 1 }
 			child_tag, child_val = find_all_elements(child, sub_dict, unused_tag_name)
 			if child_tag not in tags_dict:
@@ -30,7 +31,7 @@ def print_tags_dict(tags_dict, depth, tag, unused_tag_name):
 
 
 def parse_DFRPG_skills(root):
-	# Maybe use global args and args.group_similar for specialties?	
+	# Maybe use global args and args.group_similar for specialties?
 	skill_titles = ["Skill name", "Attr", "Diff", "Ref", "EncPen"]
 	skill_fields = ["skillname", "attr", "diff", "ref", "enc_pen"]
 	skills = {}
@@ -60,28 +61,18 @@ def parse_DFRPG_skills(root):
 
 
 def parse_DFRPG_single_spell(spell):
+	default_spell_tags = ["college", "spell_class", "casting_cost", 
+		"maintenance_cost", "casting_time", "duration", "reference"]
 	if spell.tag != "spell":
 		return None, None
 	name = ""
-	ss = {}  # single spell
+	single_spell = {}
 	for child in spell:
 		if child.tag == "name":
 			name = child.text
-		elif child.tag == "college":
-			ss["coll"] = child.text
-		elif child.tag == "spell_class":
-			ss["class"] = child.text
-		elif child.tag == "casting_cost":
-			ss["ccost"] = child.text
-		elif child.tag == "maintenance_cost":
-			ss["mcost"] = child.text
-		elif child.tag == "casting_time":
-			ss["ctime"] = child.text
-		elif child.tag == "duration":
-			ss["dur"] = child.text
-		elif child.tag == "reference":
-			ss["ref"] = child.text
-	return name, ss
+		elif child.tag in default_spell_tags:
+			single_spell[child.tag] = child.text
+	return name, single_spell
 
 def add_spell_to_all_spells(name, new_spell, spells, caster_type):
 	global args
@@ -118,8 +109,12 @@ def add_spell_cont(spell_cont, spells, caster_type):
 		add_spell_to_all_spells(name, new_spell, spells, caster_type)
 
 def parse_DFRPG_spells(root):
-	spell_titles = ["Spell name", "College", "Class", "Cast cost", "Maint cost", "Cast time", "Duration", "Ref", "Req", "Caster type"]
-	spell_fields = ["spellname", "coll", "class", "ccost", "mcost", "ctime", "dur", "ref", "req", "caster_type"]
+	spell_titles = ["Spell name", "College", "Class", "Cast cost", 
+		"Maint cost", "Cast time", "Duration", "Ref", 
+		"Req", "Caster type"]
+	spell_fields = ["spellname", "college", "spell_class", "casting_cost", 
+		"maintenance_cost", "casting_time", "duration", "reference", 
+		"req", "caster_type"]
 	all_spells = {}
 	for sp_cont in root:
 		caster_type = sp_cont.find('name').text
@@ -132,14 +127,89 @@ def parse_DFRPG_spells(root):
 			print('Unknown caster type {}, not saving anything.'.format(caster_type))
 	return all_spells, spell_titles, spell_fields
 
+def add_DFRPG_adv_skill(adv, skill):
+	skill_spec = skill.find('specialization').text if skill.find('specialization').text else ""
+	skill_data = skill.find('name').text + ":" + \
+		skill_spec + ":" + skill.find('amount').text
+	if "skills" in adv:
+		adv["skills"] += "," + skill_data
+	else:
+		adv["skills"] = skill_data
 
-def parse_DFRPG_equipment(root):
-	print("Sorry, equipment parsing hasn't been implemented yet.")
-	return None, None, None
-
+def add_DFRPG_adv(adv, all_abil, ability):
+	default_adv_tags = ["base_points", "points_per_level", "levels", 
+		"notes", "cr", "reference"]
+	category_abbr = { "Advantage": "Adv", "Disadvantage": "DisAdv", 
+		"Perk": "Perk", "Quirk": "Quirk", 
+		"Attribute": "Attr", "Cinematic": "Cinem", 
+		"Language": "Lang", "Power": "Power", "Talent": "Tal" }
+	if adv.tag != "advantage":
+		return
+	name = ""
+	sa = {}  # single advantage
+	for child in adv:
+		if child.tag == "name":
+			name = child.text
+		elif child.tag in default_adv_tags:
+			sa[child.tag] = child.text
+		elif child.tag == "prereq_list":
+			sa["prereqs"] = True
+		elif child.tag == "modifier":
+			mod_name = child.find('name').text
+			if "modifiers" in sa:
+				sa["modifiers"] += ", " + mod_name
+			else:
+				sa["modifiers"] = mod_name
+		elif child.tag == "categories":
+			cat_text = ""
+			for cat_child in child:
+				cat_text += category_abbr[cat_child.text] + ","
+			sa["categs"] = cat_text[:-1]
+		elif child.tag == "skill_bonus":
+			add_DFRPG_adv_skill(sa, child)
+	if ability:
+		sa["ability"] = ability
+	if name not in all_abil:
+		all_abil[name] = sa
+	else:
+		all_abil[name + "_" + str(uuid.uuid4())] = sa
+	# ADVantages
+	## Often same adv has more than one skill_bonus, how to deal with this?
+	#    skill_bonus: 165 # name:specialization:amount
+	#      name: 165
+	#      specialization: 165 # Often empty
+	#      amount: 165
+	# Ignore: attribute_bonus, dr_bonus, melee_weapon, spell_bonus, 
+	# cost_reduction, type
 
 def parse_DFRPG_advantages(root):
-	print("Sorry, advantages parsing hasn't been implemented yet.")
+	adv_titles = ["Advantage name", "Pts base", "Pts/Lvl", "Lvls", 
+		"Ref", "Categories", "PreReqs", "Modifiers", "SCN", "Skills", 
+		"Ability", "Notes"]
+	adv_fields = ["advname", "base_points", "points_per_level", "levels", 
+		"reference", "categs", "prereqs", "modifiers", "cr", "skills", 
+		"ability", "notes"]
+	all_advs = {}
+	for adv in root:
+		if adv.tag == "advantage_container":
+			ability = adv.find('name').text.split()[0]
+			for actual_adv in adv:
+				add_DFRPG_adv(actual_adv, all_advs, ability)
+		else:
+			add_DFRPG_adv(adv, all_advs, "")
+	return all_advs, adv_titles, adv_fields
+
+
+def parse_DFRPG_equipment(root):
+	#se = {} # single_equipment
+	#for child in eqps:
+	#	if child.tag == "name":
+	#		name = child.text
+	#	elif child.tag in default_eqp_tags:
+	#		se[child.tag] = child.text
+	#	elif child.tag == "":
+	#		se[""] = child.text
+	print("Sorry, equipment parsing hasn't been implemented yet.")
 	return None, None, None
 
 
@@ -188,7 +258,7 @@ def main():
 		#print_csv_rows(eqp, eqp_titles, eqp_fields)
 	elif xml_type == 'advantages':
 		advs, adv_titles, adv_fields = parse_DFRPG_advantages(root)
-		#print_csv_rows(advs, adv_titles, adv_fields)
+		print_csv_rows(advs, adv_titles, adv_fields)
 	else:
 		raise RuntimeError("Somehow got unknown file type through argparse!")
 
