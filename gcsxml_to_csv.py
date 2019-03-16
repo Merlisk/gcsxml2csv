@@ -76,25 +76,25 @@ def parse_DFRPG_single_spell(spell):
 
 def add_spell_to_all_spells(name, new_spell, spells, caster_type):
 	global args
-	# Single entries, but NOTE: Cleric and Druid pinv_req not always equal!
-	if args.group_similar:
-		if name in spells:
-			spells[name]["caster_type"] += ", " + caster_type
-			spells[name]["coll"] = new_spell["coll"]
-		else:
-			new_spell["caster_type"] = caster_type
-			spells[name] = new_spell
-	else:  # Individual entry for each similar spell
-		new_spell["caster_type"] = caster_type
+	# Individual entry for each similar spell
+	if args.normalize:
 		if name in spells:
 			if "caster_type" in spells[name]:
 				old_one_rename = name + " [" + spells[name]["caster_type"] + "]"
 				spells[old_one_rename] = spells[name].copy()
-				spells[name] = {}
 			new_name = name + " [" + caster_type + "]"
 			spells[new_name] = new_spell
 		else:
 			spells[name] = new_spell
+	# Single entries, but NOTE: Cleric and Druid pinv_req not always equal!
+	else:
+		if name in spells:
+			spells[name]["caster_type"] += ", " + caster_type
+			spells[name]["college"] = new_spell["college"]
+		else:
+			new_spell["caster_type"] = caster_type
+			spells[name] = new_spell
+		new_spell["caster_type"] = caster_type
 
 def add_spell_cont(spell_cont, spells, caster_type):
 	pinv_req = 0  # Power investiture requirement
@@ -129,8 +129,7 @@ def parse_DFRPG_spells(root):
 
 def add_DFRPG_adv_skill(adv, skill):
 	skill_spec = skill.find('specialization').text if skill.find('specialization').text else ""
-	skill_data = skill.find('name').text + ":" + \
-		skill_spec + ":" + skill.find('amount').text
+	skill_data = skill.find('name').text + ":" + skill_spec + ":" + skill.find('amount').text
 	if "skills" in adv:
 		adv["skills"] += "," + skill_data
 	else:
@@ -173,14 +172,6 @@ def add_DFRPG_adv(adv, all_abil, ability):
 		all_abil[name] = sa
 	else:
 		all_abil[name + "_" + str(uuid.uuid4())] = sa
-	# ADVantages
-	## Often same adv has more than one skill_bonus, how to deal with this?
-	#    skill_bonus: 165 # name:specialization:amount
-	#      name: 165
-	#      specialization: 165 # Often empty
-	#      amount: 165
-	# Ignore: attribute_bonus, dr_bonus, melee_weapon, spell_bonus, 
-	# cost_reduction, type
 
 def parse_DFRPG_advantages(root):
 	adv_titles = ["Advantage name", "Pts base", "Pts/Lvl", "Lvls", 
@@ -212,15 +203,38 @@ def parse_DFRPG_equipment(root):
 	print("Sorry, equipment parsing hasn't been implemented yet.")
 	return None, None, None
 
+def multiply_print_rows(row_dict, field_writer, ignore_fields, sep_char=','):
+	list_of_multiples = []
+	for field in row_dict:
+		if not isinstance(row_dict[field], str):
+			continue
+		if row_dict[field].find(sep_char) > -1 and field not in ignore_fields:
+			list_of_multiples.append(field)
+	#print("Debug: ", list_of_multiples)
+	if len(list_of_multiples) == 0:
+		field_writer.writerow(row_dict)
+	elif len(list_of_multiples) > 1:
+		print("Warning, had multiple divisible fields, left next row alone!;")
+		field_writer.writerow(row_dict)
+	else:  # len(list_of_multiples) == 1
+		sub_rows = row_dict[list_of_multiples[0]].split(sep_char)
+		temp_row = row_dict.copy()
+		for sub_row in sub_rows:
+			temp_row[list_of_multiples[0]] = sub_row.strip()
+			field_writer.writerow(temp_row)
 
-def print_csv_rows(rows, title_row, fieldnames):
+def print_csv_rows(rows, title_row, fieldnames, ignore_fields=[], already_normalized=False):
+	global args
 	ordered_rows = collections.OrderedDict(sorted(rows.items()))
 	title_writer = csv.writer(sys.stdout, delimiter=';')
 	title_writer.writerow(title_row)
 	field_writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames, delimiter=';')
 	for rowname, row in ordered_rows.items():
 		row[fieldnames[0]] = rowname
-		field_writer.writerow(row)
+		if args.normalize and not already_normalized:
+			multiply_print_rows(row, field_writer, ignore_fields)
+		else:
+			field_writer.writerow(row)
 
 
 def create_parameters():
@@ -231,7 +245,7 @@ def create_parameters():
 		choices=['all_tags', 'skills', 'spells', 'equipment', 'advantages'],
 		help="'all_tags' will display an indented tree-list of all tags in the xml file, with amounts.")
 	arg_parser.add_argument('-u', '--unused_tag_name', action='store', default='Number', help="A tag name unused in the XML file; for counting number of tags with the 'all_tags' file type.")
-	arg_parser.add_argument('--group_similar', action='store_true', help="Merge multiple very similar items in to a single row.")
+	arg_parser.add_argument('-n', '--normalize', action='store_true', help="Create separate rows from items in a single field.")
 	# arg_parser.add_argument('-c', '--container_category', action='store', help="Only get contents in a container with this category.")
 	return arg_parser
 
@@ -252,13 +266,13 @@ def main():
 		print_csv_rows(skills, skill_titles, skill_fields)
 	elif xml_type == 'spells':
 		spells, spell_titles, spell_fields = parse_DFRPG_spells(root)
-		print_csv_rows(spells, spell_titles, spell_fields)
+		print_csv_rows(spells, spell_titles, spell_fields, already_normalized=True)
+	elif xml_type == 'advantages':
+		advs, adv_titles, adv_fields = parse_DFRPG_advantages(root)
+		print_csv_rows(advs, adv_titles, adv_fields, ignore_fields=["categs"])
 	elif xml_type == 'equipment':
 		eqp, eqp_titles, eqp_fields = parse_DFRPG_equipment(root)
 		#print_csv_rows(eqp, eqp_titles, eqp_fields)
-	elif xml_type == 'advantages':
-		advs, adv_titles, adv_fields = parse_DFRPG_advantages(root)
-		print_csv_rows(advs, adv_titles, adv_fields)
 	else:
 		raise RuntimeError("Somehow got unknown file type through argparse!")
 
