@@ -30,6 +30,15 @@ def print_tags_dict(tags_dict, depth, tag, unused_tag_name):
 			print_tags_dict(tags_dict[child], depth + '  ', child, unused_tag_name)
 
 
+def get_child_texts(xml_obj, sep=","):
+	childs_text = ""
+	for child in xml_obj:
+		childs_text += child.text + sep
+	if len(sep) > 0:
+		childs_text = childs_text[:len(sep)*-1]
+	return childs_text
+
+
 def parse_DFRPG_skills(root):
 	# Maybe use global args and args.group_similar for specialties?
 	skill_titles = ["Skill name", "Attr", "Diff", "Ref", "EncPen"]
@@ -191,17 +200,191 @@ def parse_DFRPG_advantages(root):
 	return all_advs, adv_titles, adv_fields
 
 
-def parse_DFRPG_equipment(root):
-	#se = {} # single_equipment
-	#for child in eqps:
-	#	if child.tag == "name":
-	#		name = child.text
-	#	elif child.tag in default_eqp_tags:
-	#		se[child.tag] = child.text
+def parse_weapon_tags(weap, se):
+	default_weap_tags = ["strength", "reach", "parry",
+		"accuracy", "range", "bulk", "shots"]
+	weap_titles = ["Str Req", "Reach", "Parry", 
+		"Acc", "Range", "Bulk", "Shots", 
+		"Base Att", "Dam Bonus", "Dam type", "Usages", "Skill"]
+	weap_fields = ["strength", "reach", "parry", 
+		"accuracy", "range", "bulk", "shots", 
+		"att_type", "dam_bonus", "dam_type", "usage", "main_skill"]
+	#, "", "", "", "", "", ""
+	pass
+	#    melee_weapon: 217 # same item can have multiples -> separate csv
+	#      damage: 217 -> separate "value type", value -> [sw|thr](bonus)
+	## if begins with [sw|thr], try, otherwise extras +=
+	## from last space to end -> damage type (check)
+	## between beginning and end, remove spaces, if True -> dam_bonus
+	## damage_types = ["cr", "cut", "imp", "pi", "pi-", "cor"]
+	#      usage: 201; str, add to name
+	#      block: 217 # can ignore, (almost) always No for weapons
+	#      default: 1204 # If
+	#        type: 1204 # is Skill
+	#        modifier: 1204 # is 0 (others are defaults and < 0 )
+	#        name: 989 # then save
+	#        specialization: 21 # add if above?
+	#    ranged_weapon: 57
+	#      damage: 57
+	#      usage: 49
+	#      rate_of_fire: 43  # mostly useless. either 1 or None (grenades)
+	#      default: 140 # Same as melee weapon
+
+
+def add_shield_bonus(attrib_bonii, se):
+	req_to_be_def_bonus = ["block", "dodge", "parry"]
+	attribs = []
+	common_bonus = None
+	all_bonus_same = True
+	for attr, amount in attrib_bonii.items():
+		if common_bonus is None:
+			common_bonus = amount
+		elif common_bonus != amount:
+			all_bonus_same = False
+		attribs.append(attr)
+	if all_bonus_same and sorted(attribs) == req_to_be_def_bonus:
+		se["def_bonus"] = common_bonus
+
+def parse_single_equipment(eqp):
+	default_eqp_tags = ["value", "weight", "notes", "reference"]
+	se = {} # single_equipment
+	attrib_bonii = {}
+	for child in eqp:
+		if child.tag == "description":
+			name = child.text
+		elif child.tag in default_eqp_tags:
+			se[child.tag] = child.text
+		elif child.tag == "categories":
+			se["categs"] = get_child_texts(child)
+		elif child.tag == "melee_weapon" or child.tag == "ranged_weapon":
+			parse_weapon_tags(child, se)
+		elif child.tag == "attribute_bonus":  # Shields
+			attr = child.find("attribute").text
+			amount = child.find("amount").text
+			attrib_bonii[attr] = amount
 	#	elif child.tag == "":
 	#		se[""] = child.text
-	print("Sorry, equipment parsing hasn't been implemented yet.")
-	return None, None, None
+	if attrib_bonii:
+		add_shield_bonus(attrib_bonii, se)
+	return name, se
+
+def parse_single_armor_piece(arm):
+	default_armor_tags = ["value", "weight", "notes", "reference"]
+	common_dr_bonus = None
+	all_dr_bonus_same = True
+	dr_bonii = {}
+	sap = {}  # Single armor piece
+	for child in arm:
+		if child.tag == "description":
+			name = child.text
+		elif child.tag in default_armor_tags:
+			sap[child.tag] = child.text
+		elif child.tag == "categories":
+			sap["categs"] = get_child_texts(child)
+		elif child.tag == "dr_bonus":
+			dr = int(child.find("amount").text)
+			loc = child.find("location").text
+			dr_bonii[loc] = dr
+			if common_dr_bonus is None:
+				common_dr_bonus = dr
+			elif common_dr_bonus != dr:
+				all_dr_bonus_same = False
+	if "notes" not in sap:
+		sap["notes"] = ""
+	locs = ""
+	if all_dr_bonus_same:
+		sap["dr_bonus"] = str(common_dr_bonus)
+		for loc in dr_bonii:
+			locs += loc + ", "
+	else:
+		sap["dr_bonus"] = ""
+		for loc in dr_bonii:
+			locs += loc + ":" + str(dr_bonii[loc]) + ", "
+	locs = locs[:-2]
+	sap["body_locations"] = locs
+	return name, sap
+
+def parse_armor_container(eqp):
+	armor_titles = ["DR", "Location", "Armor suit"]
+	armor_fields = ["dr_bonus", "body_locations", "part_of_armor_suit"]
+	arm_dict = {}
+	whole_suit = {}
+	total_value = 0
+	total_weight = 0
+	common_dr_bonus = None
+	all_dr_bonus_same = True
+	common_notes = None
+	different_notes = ""
+	locations = ""
+	for child in eqp:
+		if child.tag == "description":
+			name = child.text
+		elif child.tag == "reference":
+			whole_suit["reference"] = child.text
+		elif child.tag == "categories":
+			whole_suit["categs"] = get_child_texts(child)
+		elif child.tag == "equipment":
+			child_name, sap = parse_single_armor_piece(child)
+			if not child_name.endswith("(Full Face)"):
+				total_value += int(sap["value"])
+				total_weight += float(sap["weight"].split()[0])
+			sap["part_of_armor_suit"] = name
+			arm_dict[child_name] = sap
+			# Collate info from different armor parts
+			locations += sap["body_locations"] + ", "
+			notes = sap["notes"]
+			if common_dr_bonus is None:
+				common_dr_bonus = sap["dr_bonus"]
+			elif common_dr_bonus != sap["dr_bonus"]:
+				all_dr_bonus_same = False
+			if common_notes is None:
+				common_notes = notes
+			elif common_notes != notes:
+				different_notes += notes + ", "
+	whole_suit["body_locations"] = locations[:-2]
+	# whole_suit["dr_bonus"] = common_dr_bonus if all_dr_bonus_same else "[This suit had different DR bonii]"
+	if all_dr_bonus_same:
+		whole_suit["dr_bonus"] = common_dr_bonus
+	else:
+		whole_suit["dr_bonus"] = "[This suit had different DR bonii]"
+	# whole_suit["notes"] = "[Warning, got different notes from armor pieces!]: " + different_notes[:-2] if different_notes else common_notes
+	if different_notes:
+		whole_suit["notes"] = "[Warning, got different notes from armor pieces!]: " + different_notes[:-2]
+	else:
+		whole_suit["notes"] = common_notes
+	whole_suit["value"] = str(total_value)
+	whole_suit["weight"] = str(total_weight) + " lb"
+	arm_dict[name] = whole_suit
+	return arm_dict
+
+def parse_DFRPG_equipment(root):
+	eq_titles = ["Equipment name", "Cost", "Weight", "Ref", 
+		"Can carry", "Def bonus", 
+		"DR", "Location", "Armor suit", 
+		"Categories", "Notes"]
+	eq_fields = ["eqname", "value", "weight", "reference", 
+		"carry_weight", "def_bonus", 
+		"dr_bonus", "body_locations", "part_of_armor_suit", 
+		"categs", "notes"]
+	#, "", "", "", "", "", ""
+	all_eqs = {}
+	for eqp in root:
+		if eqp.tag == "equipment_container":
+			categs = eqp.find("categories")
+			if categs.find("category").text == "Armor":
+				arm_dict = parse_armor_container(eqp)
+				all_eqs.update(arm_dict)
+				continue
+			else:
+				name, se = parse_single_equipment(eqp)
+				prl = eqp.find("prereq_list")
+				if prl:
+					se["carry_weight"] = prl.find("contained_weight_prereq").text
+		else:
+			name, se = parse_single_equipment(eqp)
+		all_eqs[name] = se
+	return all_eqs, eq_titles, eq_fields
+
 
 def multiply_print_rows(row_dict, field_writer, ignore_fields, sep_char=','):
 	list_of_multiples = []
@@ -272,7 +455,7 @@ def main():
 		print_csv_rows(advs, adv_titles, adv_fields, ignore_fields=["categs"])
 	elif xml_type == 'equipment':
 		eqp, eqp_titles, eqp_fields = parse_DFRPG_equipment(root)
-		#print_csv_rows(eqp, eqp_titles, eqp_fields)
+		print_csv_rows(eqp, eqp_titles, eqp_fields)
 	else:
 		raise RuntimeError("Somehow got unknown file type through argparse!")
 
