@@ -6,9 +6,11 @@ import uuid
 import argparse
 import xml.etree.ElementTree as ET
 import collections
+import warnings
 
+DEFAULT_CSV_DELIMITER = ";"
+DEFAULT_CSV_SUB_DELIMITER = ":"
 
-args = None
 
 def find_all_elements(elem, tags_dict, unused_tag_name):
 	if not isinstance(elem, int):
@@ -30,112 +32,237 @@ def print_tags_dict(tags_dict, depth, tag, unused_tag_name):
 			print_tags_dict(tags_dict[child], depth + '  ', child, unused_tag_name)
 
 
-def get_child_texts(xml_obj, sep=","):
-	childs_text = ""
-	for child in xml_obj:
-		childs_text += child.text + sep
-	if len(sep) > 0:
-		childs_text = childs_text[:len(sep)*-1]
-	return childs_text
+
+class CSV_FileWriter():
+	def __init__(self, args):
+		self.args = args
+	
+	# Probably remove after advantages (& equipment?) working
+	def multiply_print_rows(self, row_dict, field_writer, ignore_fields, sep_char=','):
+		list_of_multiples = []
+		for field in row_dict:
+			if not isinstance(row_dict[field], str):
+				continue
+			if row_dict[field].find(sep_char) > -1 and field not in ignore_fields:
+				list_of_multiples.append(field)
+		if len(list_of_multiples) == 0:
+			field_writer.writerow(row_dict)
+		elif len(list_of_multiples) > 1:
+			print("Warning, had multiple divisible fields, left next row alone!;")
+			field_writer.writerow(row_dict)
+		else:  # len(list_of_multiples) == 1
+			sub_rows = row_dict[list_of_multiples[0]].split(sep_char)
+			temp_row = row_dict.copy()
+			for sub_row in sub_rows:
+				temp_row[list_of_multiples[0]] = sub_row.strip()
+				field_writer.writerow(temp_row)
+	
+	def print_csv_rows(self, rows, title_row, fieldnames):
+		ordered_rows = collections.OrderedDict(sorted(rows.items()))
+		title_writer = csv.writer(sys.stdout, delimiter=self.args['csv_delimiter'])
+		title_writer.writerow(title_row)
+		field_writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames, delimiter=self.args['csv_delimiter'])
+		for rowname, row in ordered_rows.items():
+			if self.args['remove_secondary_key_output'] and rowname.endswith(row[self.args['secondary_key_field']]):
+				row[fieldnames[0]] = rowname.partition(self.args['csv_sub_delimiter'])[0]
+			else:
+				row[fieldnames[0]] = rowname
+			field_writer.writerow(row)
+			#if self.args.normalize and not already_normalized:
+			#	self.multiply_print_rows(row, field_writer, ignore_fields)
+			#else:
+			#	field_writer.writerow(row)
 
 
-def parse_DFRPG_skills(root):
-	# Maybe use global args and args.group_similar for specialties?
-	skill_titles = ["Skill name", "Attr", "Diff", "Ref", "EncPen"]
-	skill_fields = ["skillname", "attr", "diff", "ref", "enc_pen"]
-	skills = {}
-	# specialties = {}
-	for skill in root:
-		# unique = True
-		name = ""
-		ss = {}  # single skill
-		for child in skill:
-			if child.tag == "name":
-				name = child.text
-				if name in skills:
-					continue  # unique = False
-			elif child.tag == "difficulty":
-				da = child.text.partition('/')
-				ss["attr"] = da[0]
-				ss["diff"] = da[2]
-			elif child.tag == "reference":
-				ss["ref"] = child.text
-			elif child.tag == "encumbrance_penalty_multiplier":
-				ss["enc_pen"] = child.text
-			# elif child.tag == "specialization":
-			# 	ss[""] = child.text
-		if name:
-			skills[name] = ss
-	return skills, skill_titles, skill_fields
+class GCS_FileParser():
+	def __init__(self, args):
+		self.args = args
+		self.xml_data = None
+		self.current_element = None
+		self.all_rows = {}
+		self.current_row = {}
+		self.multiple_same_names = []
+		self.secondary_key_field = ""
+		self.no_child_specifics = False
+		self.csd = args.csv_sub_delimiter
+		self.read_xml_file()
+		# super().__init__()
+		# self.default_tags = ["ref"]  # see _got_default_child_text()
+		# self.csv_titles_long = ["Page Reference"]
+		# self.csv_titles_short = ["Ref"]
+		# self.csv_fields = ["ref"]
+	
+	def read_xml_file(self):
+		tree = ET.parse(self.args.input_filename)
+		self.xml_data = tree.getroot()
+	
+	def choose_partial_parse(self):
+		raise NotImplementederror("Called choose_partial_parse improperly.")
+	
+	# Don't raise NotImplementedError for these three, 
+	# since inherited classes may want to do nothing
+	def pre_parse_actions(self):
+		pass
+	
+	def specific_parse_all(self):
+		pass
+	
+	def add_child_specfic_to_row(self, child, name):
+		self.no_child_specifics = True
+	
+	def get_child_texts(self, xml_elem, sep=","):
+		childs_text = ""
+		for child in xml_elem:
+			childs_text += child.text + sep
+		if len(sep) > 0:
+			childs_text = childs_text[:len(sep)*-1]
+		return childs_text
+	
+	def _got_default_child_text(self, child):
+		if child.tag in self.default_tags:
+			self.current_row[child.tag] = child.text.strip()
+			return True
+		else:
+			return False
+	
+	def _add_and_rename_rows_with_existing_name(self, name):
+		if self.secondary_key_field not in self.current_row:
+			raise RunTimeWarning("Secondary key field {} not found for name {}, row not saved.".format(self.secondary_key_field, name))
+			return
+		second_field = self.current_row[self.secondary_key_field]
+		if not second_field:
+			raise RunTimeWarning("Secondary key field {} for name {} was empty, row not saved.".format(second_field, name))
+			return
+		self.all_rows[name + self.csd + second_field] = self.current_row
+		if name not in self.multiple_same_names:  # 2nd same name -> rename 1st
+			second_field = self.all_rows[name][self.secondary_key_field]
+			self.all_rows[name + self.csd + second_field] = self.all_rows[name]
+			del self.all_rows[name]
+
+	
+	def default_parse_all(self):
+		for self.current_element in self.xml_data:
+			self.current_row = { "name" : "" }
+			for child in self.current_element:
+				if self._got_default_child_text(child):
+					continue
+				self.add_child_specfic_to_row(child)
+			if self.current_row["name"]:
+				name = self.current_row["name"]
+				if name not in self.all_rows and name not in self.multiple_same_names:
+					self.all_rows[name] = self.current_row
+					continue
+				if self.args.same_name_action == 'first':
+					pass
+				elif self.args.same_name_action == 'last':
+					self.all_rows[name] = self.current_row
+				else:  # self.args.same_name_action == 'all'
+					self._add_and_rename_rows_with_existing_name(name)
+				self.multiple_same_names.append(name)
+	
+	def parse_all(self):
+		self.pre_parse_actions()
+		self.default_parse_all()
+		self.specific_parse_all()
+		if self.no_child_specifics:
+			print("No specific handling for child elements -- did everything work by defaults?")
+	
+	def parse(self):
+		self.parse_all()
 
 
-def parse_DFRPG_single_spell(spell):
-	default_spell_tags = ["college", "spell_class", "casting_cost", 
-		"maintenance_cost", "casting_time", "duration", "reference"]
-	if spell.tag != "spell":
-		return None, None
-	name = ""
-	single_spell = {}
-	for child in spell:
+class DFRPG_skill_parser(GCS_FileParser):
+	def __init__(self, args):
+		super().__init__(args)
+		self.default_tags = ["reference", "encumbrance_penalty_multiplier"]
+		self.csv_titles_long = ["Skill name", "Attribute", "Difficulty", 
+			"Specialization", "Page Reference", "Encumbrance Penalty"]
+		self.csv_titles_short = ["Skill name", "Attr", "Diff", "Spec", "Ref", "EncPen"]
+		self.csv_fields = ["name", "attr", "diff", "spec", "reference", "encumbrance_penalty_multiplier"]
+	
+	def add_child_specfic_to_row(self, child):
 		if child.tag == "name":
-			name = child.text
-		elif child.tag in default_spell_tags:
-			single_spell[child.tag] = child.text
-	return name, single_spell
+			self.current_row["name"] = child.text
+		elif child.tag == "difficulty":
+			da = child.text.partition('/')
+			self.current_row["attr"] = da[0]
+			self.current_row["diff"] = da[2]
+		elif child.tag == "specialization":
+			text = child.text.strip()
+			name = self.current_row["name"]
+			if name in self.all_rows:
+				if "spec" in self.all_rows[name]:
+					self.all_rows[name]["spec"] += self.csd + child.text
+				else:
+					self.all_rows[name]["spec"] = child.text
+				self.current_row["name"] = ""
+			else:
+				self.current_row["spec"] = child.text
 
-def add_spell_to_all_spells(name, new_spell, spells, caster_type):
-	global args
-	# Individual entry for each similar spell
-	if args.normalize:
-		if name in spells:
-			if "caster_type" in spells[name]:
-				old_one_rename = name + " [" + spells[name]["caster_type"] + "]"
-				spells[old_one_rename] = spells[name].copy()
-			new_name = name + " [" + caster_type + "]"
-			spells[new_name] = new_spell
-		else:
-			spells[name] = new_spell
-	# Single entries, but NOTE: Cleric and Druid pinv_req not always equal!
-	else:
-		if name in spells:
-			spells[name]["caster_type"] += ", " + caster_type
-			spells[name]["college"] = new_spell["college"]
-		else:
-			new_spell["caster_type"] = caster_type
-			spells[name] = new_spell
-		new_spell["caster_type"] = caster_type
 
-def add_spell_cont(spell_cont, spells, caster_type):
-	pinv_req = 0  # Power investiture requirement
-	for spell in spell_cont:
-		if spell.tag == "notes":
-			pinv_req = int(spell.text)
-		if spell.tag != "spell":
-			continue
-		name, new_spell = parse_DFRPG_single_spell(spell)
-		if pinv_req > 0:
-			new_spell["req"] = pinv_req
-		add_spell_to_all_spells(name, new_spell, spells, caster_type)
+class DFRPG_spell_parser(GCS_FileParser):
+	# Notes on spells:
+	# power_source is always arcane -> ignored
+	LIST_SPELL_PREREQS = ["name", "college", "college_count", "quantity"]
+	SECONDARY_KEY_FIELD = "caster_type"
+	
+	def __init__(self, args):
+		super().__init__(args)
+		self.secondary_key_field = self.SECONDARY_KEY_FIELD
+		self.parse_list = []
+		self.default_tags = ["spell_class", "casting_cost", 
+			"maintenance_cost", "casting_time", "duration", "reference"]
+		self.csv_titles_long = ["Spell name", "College", "Class", "Casting cost", 
+			"Maintenance cost", "Casting time", "Duration", "Refence", 
+			"Requisites", "Caster type"]
+		self.csv_titles_short = ["Spell name", "College", "Class", "Cast cost", 
+			"Maint cost", "Cast time", "Duration", "Ref", 
+			"Req", "Caster type"]
+		self.csv_fields = ["name", "college", "spell_class", "casting_cost", 
+			"maintenance_cost", "casting_time", "duration", "reference", 
+			"req", "caster_type"]
+	
+	def _get_spell_prereq_string(self, prereq_list):
+		out_string = ""
+		for prereq in prereq_list:
+			if prereq.tag == "advantage_prereq":
+				name_elem = prereq.find("name")
+				name = name_elem.text if name_elem is not None else ""
+				level_elem = prereq.find("level")
+				level = level_elem.text if level_elem is not None else ""
+				out_string += "advantage" + self.csd + name + self.csd + \
+					level + self.csd
+			elif prereq.tag == "spell_prereq":
+				out_string += "spell" + self.csd
+				for sp_prereq in self.LIST_SPELL_PREREQS:
+					elem = prereq.find(sp_prereq)
+					if elem is not None:
+						out_string += sp_prereq + self.csd + elem.text + self.csd
+			elif prereq.tag == "attribute_prereq":
+				out_string += "attribute" + self.csd + \
+					prereq.get("which") + self.csd + prereq.text + self.csd
+			elif prereq.tag == "prereq_list":
+				out_string += self._get_spell_prereq_string(prereq) + self.csd
+		return out_string[:-1]
+	
+	def add_child_specfic_to_row(self, child):
+		if child.tag == "name":
+			self.current_row["name"] = child.text
+		elif child.tag == "college":
+			self.current_row["college"] = child.text
+			if child.text == "Clerical" or child.text == "Druid":
+				self.current_row["caster_type"] = child.text
+			else:
+				self.current_row["caster_type"] = "Wizardly"
+		elif child.tag == "prereq_list":
+			self.current_row["req"] = self._get_spell_prereq_string(child)
+	
+	def parse(self):
+		self.xml_data = self.xml_data.findall(".//spell")
+		self.parse_all()
 
-def parse_DFRPG_spells(root):
-	spell_titles = ["Spell name", "College", "Class", "Cast cost", 
-		"Maint cost", "Cast time", "Duration", "Ref", 
-		"Req", "Caster type"]
-	spell_fields = ["spellname", "college", "spell_class", "casting_cost", 
-		"maintenance_cost", "casting_time", "duration", "reference", 
-		"req", "caster_type"]
-	all_spells = {}
-	for sp_cont in root:
-		caster_type = sp_cont.find('name').text
-		if caster_type == "Clerical" or caster_type == "Druidic":
-			for cont in sp_cont:
-				add_spell_cont(cont, all_spells, caster_type)
-		elif caster_type == 'Wizardly':
-			add_spell_cont(sp_cont, all_spells, caster_type)
-		else:
-			print('Unknown caster type {}, not saving anything.'.format(caster_type))
-	return all_spells, spell_titles, spell_fields
 
+# Old Advantages code
 def add_DFRPG_adv_skill(adv, skill):
 	skill_spec = skill.find('specialization').text if skill.find('specialization').text else ""
 	skill_data = skill.find('name').text + ":" + skill_spec + ":" + skill.find('amount').text
@@ -210,7 +337,13 @@ def parse_weapon_tags(weap, se):
 		"accuracy", "range", "bulk", "shots", 
 		"att_type", "dam_bonus", "dam_type", "usage", "main_skill"]
 	#, "", "", "", "", "", ""
-	pass
+	swu = {}
+	for child in weap:
+		if child.tag == "usage":
+			usage = child.text
+		elif child.tag in default_eqp_tags:
+			swu[child.tag] = child.text
+	return usage, swu
 	#    melee_weapon: 217 # same item can have multiples -> separate csv
 	#      damage: 217 -> separate "value type", value -> [sw|thr](bonus)
 	## if begins with [sw|thr], try, otherwise extras +=
@@ -257,7 +390,8 @@ def parse_single_equipment(eqp):
 		elif child.tag == "categories":
 			se["categs"] = get_child_texts(child)
 		elif child.tag == "melee_weapon" or child.tag == "ranged_weapon":
-			parse_weapon_tags(child, se)
+			# Problems -- we need to create multiple rows for same weapon depending on usage
+			usage, swu = parse_weapon_tags(child, se)
 		elif child.tag == "attribute_bonus":  # Shields
 			attr = child.find("attribute").text
 			amount = child.find("amount").text
@@ -386,79 +520,72 @@ def parse_DFRPG_equipment(root):
 	return all_eqs, eq_titles, eq_fields
 
 
-def multiply_print_rows(row_dict, field_writer, ignore_fields, sep_char=','):
-	list_of_multiples = []
-	for field in row_dict:
-		if not isinstance(row_dict[field], str):
-			continue
-		if row_dict[field].find(sep_char) > -1 and field not in ignore_fields:
-			list_of_multiples.append(field)
-	#print("Debug: ", list_of_multiples)
-	if len(list_of_multiples) == 0:
-		field_writer.writerow(row_dict)
-	elif len(list_of_multiples) > 1:
-		print("Warning, had multiple divisible fields, left next row alone!;")
-		field_writer.writerow(row_dict)
-	else:  # len(list_of_multiples) == 1
-		sub_rows = row_dict[list_of_multiples[0]].split(sep_char)
-		temp_row = row_dict.copy()
-		for sub_row in sub_rows:
-			temp_row[list_of_multiples[0]] = sub_row.strip()
-			field_writer.writerow(temp_row)
-
-def print_csv_rows(rows, title_row, fieldnames, ignore_fields=[], already_normalized=False):
-	global args
-	ordered_rows = collections.OrderedDict(sorted(rows.items()))
-	title_writer = csv.writer(sys.stdout, delimiter=';')
-	title_writer.writerow(title_row)
-	field_writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames, delimiter=';')
-	for rowname, row in ordered_rows.items():
-		row[fieldnames[0]] = rowname
-		if args.normalize and not already_normalized:
-			multiply_print_rows(row, field_writer, ignore_fields)
-		else:
-			field_writer.writerow(row)
-
 
 def create_parameters():
+	FILE_TYPE_CHOICES = ['all_tags', 'skills', 'spells', 'equipment', 'advantages']
+	SAME_NAME_CHOICES = ['first', 'last', 'all']
 	arg_parser = argparse.ArgumentParser(description="Read a Gurps character sheet XML data file and output to csv.",
 		epilog="Currently prints to stdout, pipe it to whatever file you want to or just admire it on your console.")
 	arg_parser.add_argument('-i', '--input_filename', action='store', required=True)
 	arg_parser.add_argument('-t', '--input_file_type', action='store', required=True,
-		choices=['all_tags', 'skills', 'spells', 'equipment', 'advantages'],
+		choices=FILE_TYPE_CHOICES,
 		help="'all_tags' will display an indented tree-list of all tags in the xml file, with amounts.")
-	arg_parser.add_argument('-u', '--unused_tag_name', action='store', default='Number', help="A tag name unused in the XML file; for counting number of tags with the 'all_tags' file type.")
-	arg_parser.add_argument('-n', '--normalize', action='store_true', help="Create separate rows from items in a single field.")
-	# arg_parser.add_argument('-c', '--container_category', action='store', help="Only get contents in a container with this category.")
+	arg_parser.add_argument('-ut', '--all_tags_unused_tag_name', action='store', default='Number', 
+		help="Used with all_tags; a tag name unused in the XML file, used for counting number of tags.")
+	arg_parser.add_argument('-sn', '--same_name_action', action='store', 
+		choices=SAME_NAME_CHOICES, default='first',
+		help="Which to keep when multiple rows would have same name.  All means using a secondary key field when same names exist.")
+	arg_parser.add_argument('-sr', '--remove_secondary_key_output', action='store_true', 
+		help="When printing output, remove the secndary key field from the name.")
+	arg_parser.add_argument('-cd', '--csv_delimiter', action='store', default=DEFAULT_CSV_DELIMITER,
+		help="Character to use as csv delimiter.")
+	arg_parser.add_argument('-cs', '--csv_sub_delimiter', action='store', default=DEFAULT_CSV_SUB_DELIMITER,
+		help="Character to use as a subfield csv delimiter when storing irregular data.")
+	#arg_parser.add_argument('-', '--', action='store', choices=['', '', ''], help="Used with")
 	return arg_parser
+
+def create_print_out_args(args, parser):
+	out_dict = {}
+	out_dict['csv_delimiter'] = args.csv_delimiter
+	out_dict['csv_sub_delimiter'] = args.csv_sub_delimiter
+	out_dict['remove_secondary_key_output'] = args.remove_secondary_key_output
+	out_dict['secondary_key_field'] = parser.secondary_key_field
+	return out_dict
 
 
 def main():
 	arg_parser = create_parameters()
-	global args
 	args = arg_parser.parse_args()
-	tree = ET.parse(args.input_filename)
-	root = tree.getroot()
 	xml_type = args.input_file_type
 	if xml_type == 'all_tags':
-		tags_dict = { args.unused_tag_name: 1 }
-		find_all_elements(root, tags_dict, args.unused_tag_name)
-		print_tags_dict(tags_dict, "", root.tag, args.unused_tag_name)
+		root = ET.parse(args.input_filename).getroot()
+		tags_dict = { args.all_tags_unused_tag_name: 1 }
+		find_all_elements(root, tags_dict, args.all_tags_unused_tag_name)
+		print_tags_dict(tags_dict, "", root.tag, args.all_tags_unused_tag_name)
+		return
 	elif xml_type == 'skills':
-		skills, skill_titles, skill_fields = parse_DFRPG_skills(root)
-		print_csv_rows(skills, skill_titles, skill_fields)
+		xml_parser = DFRPG_skill_parser(args)
 	elif xml_type == 'spells':
-		spells, spell_titles, spell_fields = parse_DFRPG_spells(root)
-		print_csv_rows(spells, spell_titles, spell_fields, already_normalized=True)
+		xml_parser = DFRPG_spell_parser(args)
 	elif xml_type == 'advantages':
-		advs, adv_titles, adv_fields = parse_DFRPG_advantages(root)
-		print_csv_rows(advs, adv_titles, adv_fields, ignore_fields=["categs"])
+		#xml_parser = DFRPG_advantages_parser(args)
+		print("Sorry, advantages hasn't been implemented yet.")
+		return
+		# advs, adv_titles, adv_fields = parse_DFRPG_advantages(root)
+		# print_csv_rows(advs, adv_titles, adv_fields, ignore_fields=["categs"])
 	elif xml_type == 'equipment':
-		eqp, eqp_titles, eqp_fields = parse_DFRPG_equipment(root)
-		print_csv_rows(eqp, eqp_titles, eqp_fields)
+		#xml_parser = DFRPG_equipment_parser(args)
+		print("Sorry, equipment hasn't been implemented yet.")
+		return
+		# eqp, eqp_titles, eqp_fields = parse_DFRPG_equipment(root)
+		# print_csv_rows(eqp, eqp_titles, eqp_fields)
 	else:
 		raise RuntimeError("Somehow got unknown file type through argparse!")
-
+	xml_parser.parse()
+	out_args = create_print_out_args(args, xml_parser)
+	csv_writer = CSV_FileWriter(out_args)
+	csv_writer.print_csv_rows(xml_parser.all_rows, xml_parser.csv_titles_short, xml_parser.csv_fields)
 
 if __name__ == "__main__":
 	main()
+
