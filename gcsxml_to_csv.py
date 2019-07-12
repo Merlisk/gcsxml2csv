@@ -12,6 +12,7 @@ DEFAULT_CSV_DELIMITER = ";"
 DEFAULT_CSV_SUB_DELIMITER = ":"
 
 
+# collections.Counter doesn't allow to save the structure as well
 def find_all_elements(elem, tags_dict, unused_tag_name):
 	if not isinstance(elem, int):
 		for child in elem:
@@ -85,6 +86,7 @@ class GCS_FileParser():
 		self.secondary_key_field = ""
 		self.no_child_specifics = False
 		self.csd = args.csv_sub_delimiter
+		self.auto_clean_sub_fields = []
 		self.read_xml_file()
 		# super().__init__()
 		# self.default_tags = ["ref"]  # see _got_default_child_text()
@@ -99,15 +101,10 @@ class GCS_FileParser():
 	def choose_partial_parse(self):
 		raise NotImplementederror("Called choose_partial_parse improperly.")
 	
-	# Don't raise NotImplementedError for these three, 
-	# since inherited classes may want to do nothing
-	def pre_parse_actions(self):
-		pass
-	
-	def specific_parse_all(self):
-		pass
-	
 	def add_child_specfic_to_row(self, child, name):
+		# if child.tag == "name":
+		#	self.current_row["name"] = child.text
+		# elif child.tag ==  :
 		self.no_child_specifics = True
 	
 	def get_child_texts(self, xml_elem, sep=","):
@@ -138,7 +135,24 @@ class GCS_FileParser():
 			second_field = self.all_rows[name][self.secondary_key_field]
 			self.all_rows[name + self.csd + second_field] = self.all_rows[name]
 			del self.all_rows[name]
-
+	
+	def post_row_actions(self):
+		if self.auto_clean_sub_fields:
+			for sub_field in self.auto_clean_sub_fields:
+				if sub_field in self.current_row and self.current_row[sub_field]:
+					self.current_row[sub_field] = self.current_row[sub_field][:-1]
+		if self.current_row["name"]:
+			name = self.current_row["name"]
+			if name not in self.all_rows and name not in self.multiple_same_names:
+				self.all_rows[name] = self.current_row
+				return
+			if self.args.same_name_action == 'first':
+				pass
+			elif self.args.same_name_action == 'last':
+				self.all_rows[name] = self.current_row
+			else:  # self.args.same_name_action == 'all'
+				self._add_and_rename_rows_with_existing_name(name)
+			self.multiple_same_names.append(name)
 	
 	def default_parse_all(self):
 		for self.current_element in self.xml_data:
@@ -147,23 +161,12 @@ class GCS_FileParser():
 				if self._got_default_child_text(child):
 					continue
 				self.add_child_specfic_to_row(child)
-			if self.current_row["name"]:
-				name = self.current_row["name"]
-				if name not in self.all_rows and name not in self.multiple_same_names:
-					self.all_rows[name] = self.current_row
-					continue
-				if self.args.same_name_action == 'first':
-					pass
-				elif self.args.same_name_action == 'last':
-					self.all_rows[name] = self.current_row
-				else:  # self.args.same_name_action == 'all'
-					self._add_and_rename_rows_with_existing_name(name)
-				self.multiple_same_names.append(name)
+			self.post_row_actions()
 	
+	# If child classes need to change the parsing process, they can create 
+	# their own parse-methods and/or call super().default_parse_all()
 	def parse_all(self):
-		self.pre_parse_actions()
 		self.default_parse_all()
-		self.specific_parse_all()
 		if self.no_child_specifics:
 			print("No specific handling for child elements -- did everything work by defaults?")
 	
@@ -209,18 +212,17 @@ class DFRPG_spell_parser(GCS_FileParser):
 	def __init__(self, args):
 		super().__init__(args)
 		self.secondary_key_field = self.SECONDARY_KEY_FIELD
-		self.parse_list = []
 		self.default_tags = ["spell_class", "casting_cost", 
 			"maintenance_cost", "casting_time", "duration", "reference"]
 		self.csv_titles_long = ["Spell name", "College", "Class", "Casting cost", 
 			"Maintenance cost", "Casting time", "Duration", "Refence", 
-			"Requisites", "Caster type"]
+			"Prerequisites", "Caster type"]
 		self.csv_titles_short = ["Spell name", "College", "Class", "Cast cost", 
 			"Maint cost", "Cast time", "Duration", "Ref", 
-			"Req", "Caster type"]
+			"PreReq", "Caster type"]
 		self.csv_fields = ["name", "college", "spell_class", "casting_cost", 
 			"maintenance_cost", "casting_time", "duration", "reference", 
-			"req", "caster_type"]
+			"prereq", "caster_type"]
 	
 	def _get_spell_prereq_string(self, prereq_list):
 		out_string = ""
@@ -255,11 +257,68 @@ class DFRPG_spell_parser(GCS_FileParser):
 			else:
 				self.current_row["caster_type"] = "Wizardly"
 		elif child.tag == "prereq_list":
-			self.current_row["req"] = self._get_spell_prereq_string(child)
+			self.current_row["prereq"] = self._get_spell_prereq_string(child)
 	
 	def parse(self):
 		self.xml_data = self.xml_data.findall(".//spell")
 		self.parse_all()
+
+
+class DFRPG_advantage_parser(GCS_FileParser):
+	# Notes on advantages:
+	# type doesn't exist in DFRPG, but included in the data for completeness' sake
+	# cr (Self-control number) is always 12, but included to show which disadvantages use it
+	DEFAULT_TAGS_ALWAYS_PRESENT = ["type", "reference"]
+	DEFAULT_TAGS_SOMETIMES_PRESENT = ["base_points", "points_per_level", 
+		"levels", "cr", "notes"]
+	
+	def __init__(self, args):
+		super().__init__(args)
+		# self.secondary_key_field = self.SECONDARY_KEY_FIELD
+		self.auto_clean_sub_fields = ["modifiers", "categs", "skills"]
+		self.default_tags = self.DEFAULT_TAGS_ALWAYS_PRESENT + self.DEFAULT_TAGS_SOMETIMES_PRESENT
+		# todo: check long names, could any of them be more descriptive?
+		self.csv_titles_long  = ["Advantage name", "Type", "Base point cost", 
+			"Cost of points per level", "Levels", "Page Reference", 
+			"Categories", "Prerequisites", "Self-control number", 
+			"Modifiers", "Skills", "Notes"]
+		self.csv_titles_short  = ["Advantage name", "Type", "Pts base", 
+			"Pts/Lvl", "Lvls", "Ref", "Categories", "PreReqs", "SCN",
+			"Skills", "Modifiers", "Notes"]
+		self.csv_fields = ["name", "type", "base_points", 
+			"points_per_level", "levels", "reference", "categs", "prereqs", "cr", 
+			"skills", "modifiers", "notes"]
+	
+	def add_child_specfic_to_row(self, child):
+		if child.tag == "name":
+			self.current_row["name"] = child.text
+		elif child.tag == "modifier":
+			if "modifiers" not in self.current_row:
+				self.current_row["modifiers"] = ""
+			modifier_string = child.find('name').text + self.csd + \
+				child.find('cost').text + self.csd
+			self.current_row["modifiers"] += modifier_string
+		elif child.tag == "categories":
+			categories_string = ""
+			for category_child in child:
+				categories_string += category_child.text + self.csd
+			self.current_row["categs"] = categories_string
+		elif child.tag == "prereq_list":
+			self.current_row["prereqs"] = True
+		elif child.tag == "skill_bonus":
+			if "skills" not in self.current_row:
+				self.current_row["skills"] = ""
+			# NoneType won't convert to string
+			specialization_text = child.find('specialization').text + self.csd if child.find('specialization').text else ""
+			skill_string = child.find('name').text + self.csd + \
+				specialization_text + child.find('amount').text + self.csd
+			self.current_row["skills"] += skill_string
+	
+	def parse(self):
+		self.parse_all()
+		# Hackety hax due to xml form
+		self.all_rows["Language_note"] = {"name":"Language_note", "notes": "Costs depend on Language Talent" }
+		self.all_rows["Wealth_second"] = {"name":"Wealth_second", "notes": "There are two Wealth advantages, check which one you're missing" }
 
 
 # Old Advantages code
@@ -568,11 +627,7 @@ def main():
 	elif xml_type == 'spells':
 		xml_parser = DFRPG_spell_parser(args)
 	elif xml_type == 'advantages':
-		#xml_parser = DFRPG_advantages_parser(args)
-		print("Sorry, advantages hasn't been implemented yet.")
-		return
-		# advs, adv_titles, adv_fields = parse_DFRPG_advantages(root)
-		# print_csv_rows(advs, adv_titles, adv_fields, ignore_fields=["categs"])
+		xml_parser = DFRPG_advantage_parser(args)
 	elif xml_type == 'equipment':
 		#xml_parser = DFRPG_equipment_parser(args)
 		print("Sorry, equipment hasn't been implemented yet.")
